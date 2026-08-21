@@ -1,3 +1,6 @@
+# Neural Hydrology
+This package is my fork of neural Hydrology package. Original repository from the authors can be found at  [Neural Hydrology](https://github.com/neuralhydrology/neuralhydrology)
+
 ![#](docs/source/_static/img/neural-hyd-logo-black.png)
 
 Python library to train neural networks with a strong focus on hydrological applications.
