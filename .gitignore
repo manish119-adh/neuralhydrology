@@ -20,3 +20,4 @@ configs/*
 .ipynb_checkpoints/
 data/*
 docs/build/*
+credentials/
