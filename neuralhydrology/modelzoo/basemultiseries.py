@@ -2,7 +2,8 @@
 from neuralhydrology.modelzoo.basemodel import BaseModel
 import torch.nn as nn
 from typing import List, Dict
-
+from neuralhydrology.utils.decorators import ignoreextraforward
+import torch
 class BaseMultiSeries(BaseModel):
     """
     Generic model that allows for combining multiple stream predictions from multiple channels and then combine
@@ -32,6 +33,8 @@ class BaseMultiSeries(BaseModel):
         It is suggested that you do not use the keys in input tensors for submodel outputs as
         the combiner also may use part of raw data e.g static inputs which will be input as required.
         Matching key names will cause the respective inputs from data dictionary be erased
+        The parameter names in aggregator (combiner) model will be all input tensors with their respective
+        names PLUS <model name>_output from all the submodels
         While we do not restrict what raw data the combiner can use we suggest that only static or
         in rare cases very low resolution data is used by combiner and all modules produce time series data
 
@@ -39,18 +42,28 @@ class BaseMultiSeries(BaseModel):
 
         """
         super(BaseMultiSeries, self).__init__(cfg=cfg)
-        self.submodels = models
+        self.submodels = submodels
         self.combiner = combiner
-        self.embedding_net = InputLayer(cfg)
-        
-
         # 
 
     def forward(self, data:Dict[str, nn.Tensor]):
-        outputs = {k: ignoreextra(self.submodels[k])(**data) for k in self.submodels}
+        # time series is input as a dictionary. Convert it to
+        # tensor
+        new_data = {}
+        for seq_key in data:
+            if isinstance(data[seq_key], dict):
+                # convert all of them into tensors
+                # Features make the last dimension
+                new_data[seq_key] = torch.stack(data[seq_key].values(), dim=-1)
+            else:
+                new_data[seq_key] = data[seq_key] # pass unchanged
+        data = new_data
+
+
+        outputs = {f"{k}_output": ignoreextraforward(self.submodels[k])(**data) for k in self.submodels}
         # merge data and outputs
         
-        combiner_output = ignoreextra(self.combiner)(**(data | outputs))
+        combiner_output = ignoreextraforward(self.combiner)(**(data | outputs))
         # Finally add prediction head
         outputs = self.head(combiner_output)
 

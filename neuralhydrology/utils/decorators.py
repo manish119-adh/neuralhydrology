@@ -15,5 +15,17 @@ def ignoreextra(func):
         kargs = {k:v for k in kargs if k in accepted_params}
         return func(*args, **kargs)
     return returned_func
+
+def ignoreextraforward(model):
+    """
+    Same as ignore extra but to be used to ignore extra parameters in forward method
+    when called directly as a callable object
+    """
+    sig = inspect.signature(model.forward)
+    accepted_params = set(sig.parameters.keys())
+    def returned_func(*args, **kargs):
+        kargs = {k:kargs[k] for k in kargs if k in accepted_params}
+        return model(*args, **kargs)
+    return returned_func
         
 

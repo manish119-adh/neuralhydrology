@@ -144,6 +144,8 @@ class BaseDataset(Dataset):
         if self.is_train:
             self._dump_scaler()
 
+    
+
     def __len__(self):
         return self.num_samples
 
