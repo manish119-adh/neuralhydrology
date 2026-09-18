@@ -15,7 +15,7 @@ validation_start_date: "01/10/1980"
 validation_end_date: "30/09/1989"
 test_start_date: "01/10/1989"
 test_end_date: "30/09/1999"
-train_dir: "run"
+train_dir: "runs"
 static_attributes:
   - runoff_ratio
   - soil_depth_statsgo

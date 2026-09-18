@@ -8,16 +8,17 @@ from pathlib import Path
 from functools import reduce
 from operator import iconcat
 from neuralhydrology.utils.dateutils import get_month_year
+from neuralhydrology.modelzoo.revnetmodified import ModifiedRevnet
 import torch
 import logging
 from tqdm import tqdm
 import sys
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("Camels US")
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 class CamelsUSBurn(CamelsUS):
-    burn_properties = [ "frac_low", "frac_moderate", "frac_high", "frac_inc_greenness"]
+    burn_properties = [ "frac_low", "frac_moderate", "frac_high", "frac_inc_greenness", "frac_unburned_low"]
     def __init__(self,
                  cfg: Config,
                  is_train: bool,
@@ -178,7 +179,12 @@ class CamelsUSBurn(CamelsUS):
         logger.info("Enriching lookup tables with burn data")
         for basin in tqdm(self.basins, file=sys.stdout, disable=self._disable_pbar):
             # compute the tensor for burn fractions and store them in self._x_burn
-            filtered_data = {feature: (xrds[feature].loc[{"basin":basin, "month_year":slice(self._burn_dates[0][basin],self._burn_dates[1][basin])}]) for feature in CamelsUSBurn.burn_properties}
+            filtered_data = {
+                feature: (xrds[feature].loc[{
+                    "basin":basin, 
+                    "month_year":slice(self._burn_dates[0][basin],self._burn_dates[1][basin])
+                    }]) for feature in CamelsUSBurn.burn_properties
+                }
             self._xburn_dates[basin] = filtered_data["frac_low"].coords["month_year"]
             self._xburn[basin] = {feature: torch.from_numpy(filtered_data[feature].to_numpy().astype(np.float32)) for feature in CamelsUSBurn.burn_properties}
             # self._xburn_dates[basin] = xrds["frac_low"].coords["month_year"]
@@ -213,7 +219,7 @@ class CamelsUSBurn(CamelsUS):
         attributes_basin_set = set(self.basins)
         common_basins = aggregate_basin_set & attributes_basin_set
         def add_actual_burn_area(basin):
-            print(f"Caling on basin {basin}")
+            
             if basin not in aggregates.index:
                 return {}
             row = aggregates[basin]
@@ -225,8 +231,6 @@ class CamelsUSBurn(CamelsUS):
             return row 
         # Add actual burn area in basins     
         list(map(add_actual_burn_area, self.basins))
-        for basin in common_basins:
-            print(aggregates[basin])
         ffgh = aggregates
         return aggregates
 
@@ -236,13 +240,25 @@ class CamelsUSBurn(CamelsUS):
         # Add burn item to the dictionary
         burn_end_index = self._burn_lookup_table[index]
         basin, indices = self.lookup_table[index]
-        burn_start_index = burn_end_index + 1 - self.burn_sequence_length
+        burn_start_index = burn_end_index + 1 - self._burn_sequence_length
         xburn_tensors = torch.stack([self._xburn[basin][feature][burn_start_index:burn_end_index+1] for feature in CamelsUSBurn.burn_properties], dim=-1)
         item["xburn"] = xburn_tensors
+        item["xburn_features"] = CamelsUSBurn.burn_properties
+        item["end_month"] = torch.tensor(int(self._xburn_dates[basin][burn_end_index])%12)
+        assert item["end_month"] + 1 == get_month_year(self._dates[basin]["1D"][indices[self.frequencies.index("1D")]]).month
         return item # added xburn to the item
         # collect all tensors and slice them
-         
 
+    @staticmethod
+    def collate_fn(samples: List[Dict[str, Union[torch.Tensor, np.ndarray, Dict[str, torch.Tensor]]]]):
+        # features are all expected to be same
+        feature_keys = [feature for feature in samples[0] if feature.endswith("_features")]
+        non_feature_keys = [feature for feature in samples[0] if not feature.endswith("_features")]
+        collated_item = CamelsUSBurn.__bases__[0].collate_fn([{key:sample[key] for key in non_feature_keys} for sample in samples])
+        for key in feature_keys:
+            # features are just kept one copy
+            collated_item[key] = samples[0][key]
+        return collated_item
     
 
 def load_burn_data(burn_data_dir):
@@ -255,28 +271,9 @@ def load_burn_data(burn_data_dir):
 
 
 
-if __name__ == "__main__":
-    cfg = Config(Path("notebooks/burndata/1_basin.yml"))
-    # Add additional configuration
-    dict_config = cfg.as_dict()
-    dict_config.update({
-        "lstm.input_size":50, 
-        "lstm.hidden_size":64, 
-        "conv1d.input_size":5,
-        "conv1d.hidden_size1":4, 
-        "conv1d.hidden_size2":3,
-        "conv1d.kernel_size1":5, 
-        "conv1d.kernel_size2":5, 
-        "burn_area_resolution_days":30, 
-        "train_basin_file": "notebooks/burndata/1_basin.txt",
-        "data_dir":"data/CAMELS_US",
-        "hidden_size":20, 
-        "burn_start_dates":{"01013500":"1995-12"},
-        "burn_end_dates":{"01013500":"2010-01"}
-        
-        })
-    cfg = Config(dict_config, allow_unknown_keys=True) # Update config
-    dataset = CamelsUSBurn(cfg, is_train=True, period="train" )
+
+    
+    
     
     
     

@@ -4,6 +4,9 @@ import torch.nn as nn
 from typing import List, Dict
 from neuralhydrology.utils.decorators import ignoreextraforward
 import torch
+from typing import Any
+import numpy as np
+
 class BaseMultiSeries(BaseModel):
     """
     Generic model that allows for combining multiple stream predictions from multiple channels and then combine
@@ -46,26 +49,32 @@ class BaseMultiSeries(BaseModel):
         self.combiner = combiner
         # 
 
-    def forward(self, data:Dict[str, nn.Tensor]):
+    def forward(self, data: dict[str, torch.Tensor | dict[str, torch.Tensor] | list[str] | np.ndarray  ]):
         # time series is input as a dictionary. Convert it to
         # tensor
         new_data = {}
         for seq_key in data:
             if isinstance(data[seq_key], dict):
-                # convert all of them into tensors
-                # Features make the last dimension
-                new_data[seq_key] = torch.stack(data[seq_key].values(), dim=-1)
+                if len(data[seq_key]):
+                    # convert all of them into tensors
+                    # Features make the last dimension
+                    new_data[seq_key] = torch.cat(tuple(data[seq_key].values()), dim=-1)
+                    new_data[f"{seq_key}_features"] = list(data[seq_key].keys())
             else:
                 new_data[seq_key] = data[seq_key] # pass unchanged
         data = new_data
-
-
-        outputs = {f"{k}_output": ignoreextraforward(self.submodels[k])(**data) for k in self.submodels}
-        # merge data and outputs
-        
-        combiner_output = ignoreextraforward(self.combiner)(**(data | outputs))
+        # Some models expect _1D frequency suffix, if it is missing it is added
+        if "x_d_1D" not in data:
+            data["x_d_1D"] = data["x_d"]
+            data["x_d_1D_features"] = data["x_d_features"]
+        if "y_1D" not in data:
+            data["y_1D"] = data["y"]
+        outputs = {f"{k}_output": self.submodels[k](**data) for k in self.submodels}
+        # merge data and outputs     
+        combiner_output = self.combiner(**(data | outputs))
         # Finally add prediction head
         outputs = self.head(combiner_output)
+        return outputs
 
         
         
