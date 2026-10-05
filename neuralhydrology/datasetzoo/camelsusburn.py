@@ -12,7 +12,11 @@ from neuralhydrology.modelzoo.revnetmodified import ModifiedRevnet
 import torch
 import logging
 from tqdm import tqdm
+from typing import List, Dict, Union
 import sys
+from functools import cache
+
+from torch.nn.functional import pad as torch_pad
 
 logger = logging.getLogger("Camels US")
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -26,7 +30,7 @@ class CamelsUSBurn(CamelsUS):
                  basin: str = None,
                  additional_features: List[Dict[str, pd.DataFrame]] = [],
                  id_to_int: Dict[str, int] = {},
-                 scaler: Dict[str, Union[pd.Series, xarray.DataArray]] = {}):
+                 scaler: Dict[str, Union[pd.Series, xr.DataArray]] = {}):
         super(CamelsUSBurn, self).__init__(cfg=cfg,
                                        is_train=is_train,
                                        period=period,
@@ -34,6 +38,7 @@ class CamelsUSBurn(CamelsUS):
                                        additional_features=additional_features,
                                        id_to_int=id_to_int,
                                        scaler=scaler)
+        self.index_calls = 0 # count number of times __getitem__ is called
 
 
     def _get_burn_data_dates(self):
@@ -62,10 +67,10 @@ class CamelsUSBurn(CamelsUS):
         # Get burn data dates for this
         # if burn start and end dates are defined 
         # in the configuration files
-        # use them otherwise it is 2 years before the 
+        # use them otherwise it is 8 years before the start date of the first month
         # first start date till one month after last end date
         # initialize with default dates
-        start_date = {basin:get_month_year(min(self.start_and_end_dates[basin]["start_dates"])) - 24 for basin in self.basins}    
+        start_date = {basin:get_month_year(min(self.start_and_end_dates[basin]["start_dates"])) - 96 for basin in self.basins}    
         end_date = {basin:get_month_year(max(self.start_and_end_dates[basin]["end_dates"])) + 1 for basin in self.basins}
         def extract_basin_dates_from_config(val):
             if isinstance(val, dict):
@@ -75,22 +80,19 @@ class CamelsUSBurn(CamelsUS):
             else:
                 # flat dates for all basins
                 return {basin:get_month_year(val) for basin in self.basins}
-        if "burn_start_dates" in self.cfg.as_dict():
-            val = self.cfg.as_dict()["burn_start_dates"]
+        if f"{self.period}_burn_start_dates" in self.cfg.as_dict():
+            val = self.cfg.as_dict()[f"{self.period}_burn_start_dates"]
             start_date.update(extract_basin_dates_from_config(val))
-        if "burn_end_dates" in self.cfg.as_dict():
-            val = self.cfg.as_dict()["burn_end_dates"]
+        if f"{self.period}_burn_end_dates" in self.cfg.as_dict():
+            val = self.cfg.as_dict()[f"{self.period}_burn_end_dates"]
             end_date.update(extract_basin_dates_from_config(val))
         self._burn_dates = (start_date, end_date)
-        # Get the sequence length for burn data default is 24 months or
-        # two years upto the last month we have daily forcing data of
-        self._burn_sequence_length = 24
+        # Get the sequence length for burn data default is 96 months or
+        # 8 years upto the last month we have daily forcing data of
+        self._burn_sequence_length = 96
         if "burn_sequence_length" in self.cfg.as_dict():
             self._burn_sequence_length = int(self.cfg.as_dict()["burn_sequence_length"])
 
-        
-
-            
 
     def _create_monthly_xarray_burn_data(self) -> xr.Dataset:
         self._get_burn_data_dates()
@@ -141,7 +143,7 @@ class CamelsUSBurn(CamelsUS):
         return x_burn
 
 
-    def _load_or_create_xarray_dataset(self) -> xarray.Dataset:
+    def _load_or_create_xarray_dataset(self) -> xr.Dataset:
         # Load or create xarray dataset overridden from basedataset
         # We will also merge burn dataset into the original dataset and save it 
         # if applicable
@@ -149,7 +151,7 @@ class CamelsUSBurn(CamelsUS):
         if (self.cfg.train_data_file is not None) and (self.is_train):
             with self.cfg.train_data_file.open("rb") as fp:
                 d = pickle.load(fp)
-                dataset = xarray.Dataset.from_dict(d)
+                dataset = xr.Dataset.from_dict(d)
         else:
             # Merge the forcing dataset from basedataset
             logger.info("Loading burn timeseries data")
@@ -162,6 +164,7 @@ class CamelsUSBurn(CamelsUS):
                 self._save_xarray_dataset(dataset)
                 logger.info("Training data saved to file")
         return dataset
+
 
     def _create_lookup_table(self,  xrds: xr.Dataset):
         # It calls _create_lookup_table from the base using only the original dataset (burn data removed)
@@ -235,6 +238,7 @@ class CamelsUSBurn(CamelsUS):
         return aggregates
 
 
+    @cache
     def __getitem__(self, index):
         item = super(CamelsUSBurn, self).__getitem__(index)
         # Add burn item to the dictionary
@@ -243,22 +247,42 @@ class CamelsUSBurn(CamelsUS):
         burn_start_index = burn_end_index + 1 - self._burn_sequence_length
         xburn_tensors = torch.stack([self._xburn[basin][feature][burn_start_index:burn_end_index+1] for feature in CamelsUSBurn.burn_properties], dim=-1)
         item["xburn"] = xburn_tensors
-        item["xburn_features"] = CamelsUSBurn.burn_properties
         item["end_month"] = torch.tensor(int(self._xburn_dates[basin][burn_end_index])%12)
-        assert item["end_month"] + 1 == get_month_year(self._dates[basin]["1D"][indices[self.frequencies.index("1D")]]).month
+        # calculate the number of days in each month
+        if "x_d_1D" not in item:
+            seq_len = item["x_d"]
+        else:
+            seq_len = item["x_d_1D"]
+        k = next(iter(seq_len))
+        seq_len = seq_len[k].shape[0]
+        daily_end_index = indices[self.frequencies.index("1D")]
+        assert item["end_month"] + 1 == get_month_year(self._dates[basin]["1D"][daily_end_index]).month
+        
+        all_dates = self._dates[basin]["1D"][daily_end_index + 1 - seq_len:daily_end_index + 1]
+        month_days = [] # Number of days in each month
+        for (i, date) in enumerate(all_dates):
+            if i==0 or get_month_year(date).month != get_month_year(all_dates[i-1]).month:
+                month_days.append(1)
+            else:
+                month_days[-1] += 1
+        month_days = torch.tensor(month_days)
+        # Zero pad to the left to match with burn_sequence_length
+        item["month_days"] = torch_pad(month_days, ( self._burn_sequence_length - month_days.shape[0], 0))
+        self.index_calls += 1
         return item # added xburn to the item
         # collect all tensors and slice them
 
-    @staticmethod
-    def collate_fn(samples: List[Dict[str, Union[torch.Tensor, np.ndarray, Dict[str, torch.Tensor]]]]):
-        # features are all expected to be same
-        feature_keys = [feature for feature in samples[0] if feature.endswith("_features")]
-        non_feature_keys = [feature for feature in samples[0] if not feature.endswith("_features")]
-        collated_item = CamelsUSBurn.__bases__[0].collate_fn([{key:sample[key] for key in non_feature_keys} for sample in samples])
-        for key in feature_keys:
-            # features are just kept one copy
-            collated_item[key] = samples[0][key]
-        return collated_item
+
+    # @staticmethod
+    # def collate_fn(samples: List[Dict[str, Union[torch.Tensor, np.ndarray, Dict[str, torch.Tensor]]]]):
+    #     # Number of month daya may not match across samples hence zero pad the samples to the left to make same shape
+    #     feature_keys = [feature for feature in samples[0] if feature.endswith("_features")]
+    #     non_feature_keys = [feature for feature in samples[0] if not feature.endswith("_features")]
+    #     collated_item = CamelsUSBurn.__bases__[0].collate_fn([{key:sample[key] for key in non_feature_keys} for sample in samples])
+    #     for key in feature_keys:
+    #         # features are just kept one copy
+    #         collated_item[key] = samples[0][key]
+    #     return collated_item
     
 
 def load_burn_data(burn_data_dir):
@@ -269,11 +293,6 @@ def load_burn_data(burn_data_dir):
     aggregate = df.groupby("GAGEID")[["overlap_area_m2", "Ig_Date_str", "frac_low", "frac_moderate", "frac_unburned_low", "frac_inc_greenness", "frac_high"]].apply(lambda x: x.to_dict(orient="records"))
     return aggregate
 
-
-
-
-    
-    
     
     
     

@@ -7,6 +7,7 @@ from typing import List, Dict
 import torch
 import numpy as np
 from neuralhydrology.utils.decorators import ignoreextraforward
+from neuralhydrology.utils.config import Config
 
 class ModifiedRevnet(BaseMultiSeries):
 
@@ -19,6 +20,8 @@ class ModifiedRevnet(BaseMultiSeries):
         def forward(self, x_d_1D):
             output = self.lstm(x_d_1D)
             return output
+
+
 
     @ignoreextraforward
     class Model2(nn.Module):
@@ -43,11 +46,12 @@ class ModifiedRevnet(BaseMultiSeries):
             # learnable month embeddings
             self.month_embeddings = nn.Embedding(num_embeddings=12, embedding_dim=month_emb_dim)
 
-            
+
+
         def forward(self, xburn, end_month):
             # convert from end month index to month embeddings
             seq_len = xburn.shape[1]
-            seq = torch.from_numpy(np.array([np.arange(-seq_len + 1, 1)]))
+            seq = torch.arange(-seq_len + 1, 1).unsqueeze(0).to(end_month.device)
             months = (end_month.view(-1, 1) + seq)%12
             embeddings = self.month_embeddings(months)
             embedded_months = combined = torch.cat((xburn, embeddings), dim=-1)
@@ -56,7 +60,7 @@ class ModifiedRevnet(BaseMultiSeries):
 
     @ignoreextraforward
     class Aggregator(nn.Module):
-        def __init__(self, input1, input2, static, burn_area_resolution_days, output):
+        def __init__(self, input1, input2, static,  output, burn_area_resolution_days=None):
             super(ModifiedRevnet.Aggregator, self).__init__()
             self.w1 = nn.Parameter(torch.randn(input1, output), requires_grad=True)
             self.w2 = nn.Parameter(torch.randn(input2, output), requires_grad=True)
@@ -64,11 +68,24 @@ class ModifiedRevnet(BaseMultiSeries):
             self.b = nn.Parameter(torch.zeros(output), requires_grad=True)
             self.burn_area_resolution_days = burn_area_resolution_days
 
-        def forward(self, lstm_output, conv_output, x_s):
+
+        def forward(self, lstm_output, conv_output, x_s, month_days=None):
             d1 = lstm_output[0] @ self.w1
             d2 = conv_output @ self.w2
             s = x_s @ self.w3
-            d2 = torch.repeat_interleave(d2, repeats=self.burn_area_resolution_days, dim=-2)[..., :d1.shape[-2],: ]
+            batch_size, months, dimensions = d2.shape
+            d2 = d2.reshape(-1, dimensions)
+            if month_days is not None:
+                repeats=month_days.reshape(-1)
+            else:
+                # Fixed repeat days
+                if self.burn_area_resolution_days is None:
+                    raise Exception("either burn_area_resolution_days should be present in the model or month_days parameter should be passed, bur")
+                repeats = self.burn_area_resolution_days
+
+            d2 = torch.repeat_interleave(d2, repeats=month_days.reshape(-1), dim=0)
+            d2 = d2.reshape(batch_size, -1, dimensions)
+            assert d2.shape[1] == d1.shape[1]
             output = d1 + d2 + s[..., None, :] + self.b
             output = nn.GELU()(output)
             return output
@@ -76,16 +93,16 @@ class ModifiedRevnet(BaseMultiSeries):
             
 
     def __init__(self, cfg: Config):
-        lstm_input, lstm_hidden = cfg.as_dict()["daily.input_size"], cfg.as_dict()["daily.hidden_size"]
+        lstm_input, lstm_hidden = cfg.as_dict()["daily_input_size"], cfg.as_dict()["daily_hidden_size"]
         month_emb_dim = cfg.as_dict()["month_emb_dim"] # month embedding dimensions
         model1 = ModifiedRevnet.Model1(lstm_input, lstm_hidden)
-        conv1dinput, hidden1, hidden2, kernel1, kernel2 = cfg.as_dict()["burn.input_size"], cfg.as_dict()["burn.hidden_size1"], cfg.as_dict()["burn.hidden_size2"], cfg.as_dict()["burn.kernel_size1"], cfg.as_dict()["burn.kernel_size2"]
+        conv1dinput, hidden1, hidden2, kernel1, kernel2 = cfg.as_dict()["burn_input_size"], cfg.as_dict()["burn_hidden_size1"], cfg.as_dict()["burn_hidden_size2"], cfg.as_dict()["burn_kernel_size1"], cfg.as_dict()["burn_kernel_size2"]
         model2 = ModifiedRevnet.Model2(conv1dinput, hidden1, hidden2, kernel1, kernel2, month_emb_dim=month_emb_dim )
         model_dictionary = nn.ModuleDict({"lstm": model1, "conv": model2})
         final_hidden_size = cfg.hidden_size
         static_size = len(cfg.static_attributes)
-        burn_area_res = cfg.as_dict()["burn_area_resolution_days"]
-        aggregator = ModifiedRevnet.Aggregator(lstm_hidden, hidden2, static_size, burn_area_res,  final_hidden_size)
+        burn_area_res = cfg.as_dict().get("burn_area_resolution_days", None)
+        aggregator = ModifiedRevnet.Aggregator(lstm_hidden, hidden2, static_size, final_hidden_size, burn_area_resolution_days = burn_area_res)
         super(ModifiedRevnet, self).__init__(cfg, aggregator, model_dictionary)
         self.head = get_head(cfg=cfg, n_in=final_hidden_size, n_out=self.output_size)
 

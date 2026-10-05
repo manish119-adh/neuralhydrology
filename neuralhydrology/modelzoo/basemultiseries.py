@@ -6,6 +6,7 @@ from neuralhydrology.utils.decorators import ignoreextraforward
 import torch
 from typing import Any
 import numpy as np
+from neuralhydrology.utils.config import Config
 
 class BaseMultiSeries(BaseModel):
     """

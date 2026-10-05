@@ -41,7 +41,7 @@ class Config(object):
     ]
     _metadata_keys = ['package_version', 'commit_hash']
 
-    def __init__(self, yml_path_or_dict: Union[Path, dict], dev_mode: bool = False, allow_unknown_keys: bool=False):
+    def __init__(self, yml_path_or_dict: Union[Path, dict], dev_mode: bool = False):
         if isinstance(yml_path_or_dict, Path):
             self._cfg = Config._read_and_parse_config(yml_path=yml_path_or_dict)
         elif isinstance(yml_path_or_dict, dict):
@@ -49,7 +49,7 @@ class Config(object):
         else:
             raise ValueError(f'Cannot create a config from input of type {type(yml_path_or_dict)}.')
 
-        if not (self._cfg.get('dev_mode', False) or allow_unknown_keys or dev_mode):
+        if not (self._cfg.get('dev_mode', False) or dev_mode):
             Config._check_cfg_keys(self._cfg)
 
         # Adjust experiment name

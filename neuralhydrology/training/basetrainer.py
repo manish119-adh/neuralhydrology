@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import time
 
 import neuralhydrology.training.loss as loss
 from neuralhydrology.datasetzoo import get_dataset
@@ -350,10 +351,10 @@ class BaseTrainer(object):
 
                 # update weights
                 self.optimizer.step()
-
             pbar.set_postfix_str(f"Loss: {loss.item():.4f}")
 
             self.experiment_logger.log_step(**{k: v.item() for k, v in all_losses.items()})
+            
     def _set_random_seeds(self):
         if self.cfg.seed is None:
             self.cfg.seed = int(np.random.uniform(low=0, high=1e6))

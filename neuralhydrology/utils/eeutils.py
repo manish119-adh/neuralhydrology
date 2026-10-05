@@ -1,5 +1,6 @@
 import ee
 import json
+from pathlib import Path
 
 def initialize_earth(credentials_file: Path):
     with open(credentials_file, "r") as fil:

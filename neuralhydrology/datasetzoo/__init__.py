@@ -7,6 +7,7 @@ from neuralhydrology.datasetzoo.camelscl import CamelsCL
 from neuralhydrology.datasetzoo.camelsde import CamelsDE
 from neuralhydrology.datasetzoo.camelsgb import CamelsGB
 from neuralhydrology.datasetzoo.camelsus import CamelsUS
+from neuralhydrology.datasetzoo.camelsusburn import CamelsUSBurn
 from neuralhydrology.datasetzoo.caravan import Caravan
 from neuralhydrology.datasetzoo.camelsind import CamelsIND
 from neuralhydrology.datasetzoo.genericdataset import GenericDataset
@@ -112,4 +113,5 @@ _datasetZooRegistry.register_dataset_class("lamah_c", LamaH)
 _datasetZooRegistry.register_dataset_class("caravan", Caravan)
 _datasetZooRegistry.register_dataset_class("camels_ind", CamelsIND)
 _datasetZooRegistry.register_dataset_class("camels_de", CamelsDE)
+_datasetZooRegistry.register_dataset_class("camels_us_burn", CamelsUSBurn)
 
